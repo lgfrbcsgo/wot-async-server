@@ -2,11 +2,19 @@ import errno
 import select
 import socket
 from contextlib import contextmanager
+from typing import Any, Callable, ContextManager, Dict, List
 
 import BigWorld
-from typing import Any, Callable, Dict, List, ContextManager
+from async import (
+    AsyncEvent,
+    AsyncSemaphore,
+    _Future,
+    async,
+    await,
+    await_callback,
+    delay,
+)
 from BWUtil import AsyncReturn
-from async import AsyncEvent, AsyncSemaphore, _Future, async, await, await_callback, delay
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -24,14 +32,7 @@ DISCONNECTED = {
 
 BLOCKS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.WSAEWOULDBLOCK}
 
-Protocol = Callable[
-    [
-        Callable[[int], _Future],
-        Callable[[str], _Future],
-        Any,
-    ],
-    None
-]
+Protocol = Callable[[Callable[[int], _Future], Callable[[str], _Future], Any], None]
 
 
 class DisconnectEvent(Exception):
@@ -82,11 +83,12 @@ class SelectParkingLot(object):
     @staticmethod
     def _park(parked, sock, invalidate):
         # type: (Dict[int, AsyncEvent], socket.socket, bool) -> AsyncEvent
-        if sock.fileno() not in parked:
-            parked[sock.fileno()] = AsyncEvent()
+        sock_fd = sock.fileno()
+        if sock_fd not in parked:
+            parked[sock_fd] = AsyncEvent()
         elif invalidate:
-            parked[sock.fileno()].clear()
-        return parked[sock.fileno()]
+            parked[sock_fd].clear()
+        return parked[sock_fd]
 
 
 @async
@@ -180,26 +182,36 @@ def run_accept_loop(listening_sock, parking_lot, accept_callback):
     # type: (socket.socket, SelectParkingLot, Callable[[socket.socket], Any]) -> _Future
     while True:
         yield await(parking_lot.park_read(listening_sock))
-        sock, _ = listening_sock.accept()
-        sock.setblocking(0)
-        accept_callback(sock)
+        try:
+            sock, _ = listening_sock.accept()
+        except socket.error as e:
+            if e.args[0] in DISCONNECTED:
+                return
+            else:
+                raise
+        else:
+            sock.setblocking(0)
+            accept_callback(sock)
 
 
 @async
 def handle_socket(protocol, connected_socks, parking_lot, sock):
     # type: (Protocol, Dict[int, socket.socket], SelectParkingLot, socket.socket) -> _Future
-    connected_socks[sock.fileno()] = sock
+    sock_fd = sock.fileno()
+    connected_socks[sock_fd] = sock
     try:
         write_semaphore = AsyncSemaphore()
-        yield await(protocol(
-            lambda max_length: read(parking_lot, sock, max_length),
-            lambda data: write(parking_lot, write_semaphore, sock, data),
-            sock.getpeername()
-        ))
+        yield await(
+            protocol(
+                lambda max_length: read(parking_lot, sock, max_length),
+                lambda data: write(parking_lot, write_semaphore, sock, data),
+                sock.getpeername(),
+            )
+        )
     except DisconnectEvent:
         pass
     finally:
-        del connected_socks[sock.fileno()]
+        del connected_socks[sock_fd]
         sock.close()
 
 
