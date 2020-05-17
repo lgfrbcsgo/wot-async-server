@@ -1,5 +1,5 @@
 # WoT Async Server
-A non blocking TCP server which makes use of the `async` / `await` primitives of WoT.
+A single threaded, non blocking TCP server which makes use of the `async` / `await` primitives of WoT.
 
 ```python
 from async import async, await
@@ -14,10 +14,10 @@ def echo(reader, writer, addr):
     try:
         # run until the client closes the connection
         while True:
-            # wait until we receive some data, at most 1024 byte
+            # wait until we receive some data, at most 1024 bytes
             data = yield await(reader(1024))
             LOG_NOTE("Received: {data}".format(data=data))
-            # echo data back to client, wait until all data has been sent
+            # echo the data back to client, wait until everything has been sent
             yield await(writer(data))
     finally:
         # server closed or client disconnected
@@ -33,6 +33,6 @@ def serve():
             yield await(poll.poll_next_frame())
 
 
-# start serving
+# start serving, does not block the current thread
 serve()
 ```
