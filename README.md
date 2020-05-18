@@ -3,8 +3,8 @@ A single threaded, non blocking TCP server which makes use of the `async` / `awa
 
 ```python
 from async import async, await
-from async_server import open_server
 from debug_utils import LOG_NOTE
+from mod_async_server import open_server
 
 
 @async
