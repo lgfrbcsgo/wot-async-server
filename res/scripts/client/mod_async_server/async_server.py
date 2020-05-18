@@ -178,8 +178,8 @@ def write(parking_lot, write_semaphore, sock, data):
 
 
 @async
-def run_accept_loop(listening_sock, parking_lot, accept_callback):
-    # type: (socket.socket, SelectParkingLot, Callable[[socket.socket], Any]) -> _Future
+def run_accept_loop(parking_lot, listening_sock, accept_callback):
+    # type: (SelectParkingLot, socket.socket, Callable[[socket.socket], Any]) -> _Future
     while True:
         yield await(parking_lot.park_read(listening_sock))
         try:
@@ -195,8 +195,8 @@ def run_accept_loop(listening_sock, parking_lot, accept_callback):
 
 
 @async
-def handle_socket(protocol, connected_socks, parking_lot, sock):
-    # type: (Protocol, Dict[int, socket.socket], SelectParkingLot, socket.socket) -> _Future
+def handle_socket(parking_lot, connected_socks, protocol, sock):
+    # type: (SelectParkingLot, Dict[int, socket.socket], Protocol, socket.socket) -> _Future
     sock_fd = sock.fileno()
     connected_socks[sock_fd] = sock
     try:
@@ -222,14 +222,13 @@ def open_server(protocol, port, host="localhost"):
     connected_socks = dict()  # type: Dict[int, socket.socket]
     parking_lot = SelectParkingLot()
     try:
-        run_accept_loop(
-            listening_sock,
-            parking_lot,
-            lambda sock: handle_socket(protocol, connected_socks, parking_lot, sock),
-        )
+        run_accept_loop(parking_lot, listening_sock,
+                        lambda sock: handle_socket(parking_lot, connected_socks, protocol, sock))
         yield PollingManager(parking_lot.poll_sockets)
     finally:
         listening_sock.close()
         for connected_sock in connected_socks.itervalues():
             connected_sock.close()
+
+        # wake up waiting futures to clean up protocol instances
         parking_lot.close()
