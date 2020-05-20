@@ -20,14 +20,14 @@ def echo_protocol(server, stream):
         # stream.read and stream.write will raise a StreamClosed exception.
         while True:
             # wait until we receive some data, at most 1024 bytes.
-            data = yield await(stream.read(1024))
+            data = yield await(stream.receive(1024))
             LOG_NOTE(
                 "Received data from [{host}]:{port}: {data}".format(
                     host=host, port=port, data=data
                 )
             )
             # echo the data back to client, wait until everything has been sent.
-            yield await(stream.write(data))
+            yield await(stream.send(data))
     finally:
         # server closed or peer disconnected.
         LOG_NOTE("[{host}]:{port} disconnected".format(host=host, port=port))

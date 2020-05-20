@@ -98,7 +98,7 @@ class Stream(object):
         self._sock.close()
 
     @async
-    def read(self, max_length):
+    def receive(self, max_length):
         # type: (int) -> _Future
         while True:
             try:
@@ -118,16 +118,16 @@ class Stream(object):
                     raise AsyncReturn(data)
 
     @async
-    def write(self, data):
+    def send(self, data):
         # type: (str) -> _Future
         yield await(self._write_mutex.acquire())
         try:
-            yield await(self._do_write(data))
+            yield await(self._do_send(data))
         finally:
             self._write_mutex.release()
 
     @async
-    def _do_write(self, data):
+    def _do_send(self, data):
         while data:
             try:
                 bytes_sent = self._sock.send(data[:512])
@@ -151,11 +151,12 @@ class ServerClosed(Exception):
 
 
 class Server(object):
-    def __init__(self, protocol, port, host="localhost"):
-        # type: (Callable[[Server, Stream], _Future], int, str) -> None
+    def __init__(self, protocol, port, host="localhost", connection_limit=8):
+        # type: (Callable[[Server, Stream], _Future], int, str, int) -> None
         self._parking_lot = SelectParkingLot()
         self._listening_sock = create_listening_socket(host, port)
         self._connections = dict()  # type: Dict[int, socket.socket]
+        self._connection_limit = connection_limit
         self._protocol = protocol
         self._closed = False
         self._start_accepting()
@@ -196,7 +197,10 @@ class Server(object):
                 yield await(self._parking_lot.park_read(self._listening_sock))
                 sock, _ = self._listening_sock.accept()
                 sock.setblocking(0)
-                self._accept_connection(sock)
+                if len(self._connections) < self._connection_limit:
+                    self._accept_connection(sock)
+                else:
+                    sock.close()
         except socket.error as e:
             if e.args[0] in DISCONNECTED:
                 pass
