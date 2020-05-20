@@ -3,7 +3,8 @@ import select
 import socket
 from typing import Callable, Dict, List
 
-from async import AsyncEvent, AsyncSemaphore, _Future, async, await
+import BigWorld
+from async import AsyncEvent, AsyncSemaphore, _Future, async, await, await_callback
 from BWUtil import AsyncReturn
 from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
 
@@ -151,7 +152,7 @@ class ServerClosed(Exception):
 
 class Server(object):
     def __init__(self, protocol, port, host="localhost"):
-        # type: (Callable[[Server, Stream], None], int, str) -> None
+        # type: (Callable[[Server, Stream], _Future], int, str) -> None
         self._parking_lot = SelectParkingLot()
         self._listening_sock = create_listening_socket(host, port)
         self._connections = dict()  # type: Dict[int, socket.socket]
@@ -232,3 +233,11 @@ def create_listening_socket(host, port):
     sock.bind(addr)
     sock.listen(5)
     return sock
+
+
+@async
+def delay(timeout):
+    def callback_wrapper(callback):
+        BigWorld.callback(timeout, callback)
+
+    yield await_callback(callback_wrapper)()
