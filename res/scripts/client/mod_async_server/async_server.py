@@ -1,10 +1,11 @@
 import errno
 import select
 import socket
-from contextlib import contextmanager
-from typing import Any, Callable, ContextManager, Dict, List
 
 import BigWorld
+from typing import Callable, Dict, List
+
+from BWUtil import AsyncReturn
 from async import (
     AsyncEvent,
     AsyncSemaphore,
@@ -14,7 +15,7 @@ from async import (
     await_callback,
     delay,
 )
-from BWUtil import AsyncReturn
+from debug_utils import LOG_WARNING, LOG_CURRENT_EXCEPTION, LOG_ERROR
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -32,12 +33,6 @@ DISCONNECTED = {
 
 BLOCKS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.WSAEWOULDBLOCK}
 
-Protocol = Callable[[Callable[[int], _Future], Callable[[str], _Future], Any], None]
-
-
-class DisconnectEvent(Exception):
-    pass
-
 
 class SelectParkingLot(object):
     def __init__(self):
@@ -46,16 +41,16 @@ class SelectParkingLot(object):
         self._writers = dict()  # type: Dict[int, AsyncEvent]
 
     @async
-    def park_read(self, sock, invalidate=True):
-        # type: (socket.socket, bool) -> _Future
+    def park_read(self, sock):
+        # type: (socket.socket) -> _Future
         if not self._closed:
-            yield await(self._park(self._readers, sock, invalidate).wait())
+            yield await(self._park(self._readers, sock).wait())
 
     @async
-    def park_write(self, sock, invalidate=True):
-        # type: (socket.socket, bool) -> _Future
+    def park_write(self, sock):
+        # type: (socket.socket) -> _Future
         if not self._closed:
-            yield await(self._park(self._writers, sock, invalidate).wait())
+            yield await(self._park(self._writers, sock).wait())
 
     def poll_sockets(self):
         # type: () -> None
@@ -81,32 +76,111 @@ class SelectParkingLot(object):
             event.set()
 
     @staticmethod
-    def _park(parked, sock, invalidate):
-        # type: (Dict[int, AsyncEvent], socket.socket, bool) -> AsyncEvent
+    def _park(parked, sock):
+        # type: (Dict[int, AsyncEvent], socket.socket) -> AsyncEvent
         sock_fd = sock.fileno()
         if sock_fd not in parked:
             parked[sock_fd] = AsyncEvent()
-        elif invalidate:
-            parked[sock_fd].clear()
         return parked[sock_fd]
 
 
-@async
-def tick():
-    def callback_wrapper(callback):
-        BigWorld.callback(0, callback)
-
-    yield await_callback(callback_wrapper)()
+class StreamClosed(Exception):
+    pass
 
 
-class PollingManager(object):
-    def __init__(self, poll_callback):
-        # type: (Callable[[], None]) -> None
-        self._poll_callback = poll_callback
+class Stream(object):
+    def __init__(self, parking_lot, sock):
+        # type: (SelectParkingLot, socket.socket) -> None
+        self._parking_lot = parking_lot
+        self._sock = sock
+        self._write_mutex = AsyncSemaphore(1)
+
+    @property
+    def addr(self):
+        return self._sock.getsockname()[:2]
+
+    @property
+    def peer_addr(self):
+        return self._sock.getpeername()[:2]
+
+    @async
+    def read(self, max_length):
+        # type: (int) -> _Future
+        while True:
+            try:
+                data = self._sock.recv(max_length)
+            except socket.error as e:
+                if e.args[0] in BLOCKS:
+                    # socket not ready, wait until socket is ready
+                    yield await(self._parking_lot.park_read(self._sock))
+                elif e.args[0] in DISCONNECTED:
+                    raise StreamClosed()
+                else:
+                    raise
+            else:
+                if not data:
+                    raise StreamClosed()
+                else:
+                    raise AsyncReturn(data)
+
+    @async
+    def write(self, data):
+        # type: (str) -> _Future
+        yield await(self._write_mutex.acquire())
+        try:
+            yield await(self._do_write(data))
+        finally:
+            self._write_mutex.release()
+
+    @async
+    def _do_write(self, data):
+        while data:
+            try:
+                bytes_sent = self._sock.send(data[:512])
+            except socket.error as e:
+                if e.args[0] in BLOCKS:
+                    # socket not ready, wait until socket is ready
+                    yield await(self._parking_lot.park_write(self._sock))
+                elif e.args[0] in DISCONNECTED:
+                    raise StreamClosed()
+                else:
+                    raise
+            else:
+                if bytes_sent < min(len(data), 512):
+                    # not everything has been sent, wait until socket is ready again
+                    yield await(self._parking_lot.park_write(self._sock))
+                data = data[bytes_sent:]
+
+
+Protocol = Callable[[Stream], None]
+
+
+class ServerClosed(Exception):
+    pass
+
+
+class Server(object):
+    def __init__(self, protocol, port, host="localhost"):
+        # type: (Protocol, int, str) -> None
+        self._parking_lot = SelectParkingLot()
+        self._listening_sock = create_listening_socket(host, port)
+        self._connections = dict()  # type: Dict[int, socket.socket]
+        self._protocol = protocol
+        self._closed = False
+        self._start_accepting()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def poll(self):
         # type: () -> None
-        self._poll_callback()
+        if self._closed:
+            raise ServerClosed()
+
+        self._parking_lot.poll_sockets()
 
     @async
     def poll_next_frame(self):
@@ -116,8 +190,63 @@ class PollingManager(object):
 
     @async
     def poll_after(self, timeout):
+        # type: (float) -> _Future
         yield await(delay(timeout))
         self.poll()
+
+    def close(self):
+        # type: () -> None
+        self._closed = True
+        self._listening_sock.close()
+        for connected_sock in self._connections.itervalues():
+            connected_sock.close()
+
+        # wake up waiting futures to clean up protocol instances
+        self._parking_lot.close()
+
+    @async
+    def _start_accepting(self):
+        # type: () -> _Future
+        try:
+            while True:
+                yield await(self._parking_lot.park_read(self._listening_sock))
+                sock, _ = self._listening_sock.accept()
+                sock.setblocking(0)
+                self._accept_connection(sock)
+        except socket.error as e:
+            if e.args[0] in DISCONNECTED:
+                pass
+        except Exception:
+            LOG_ERROR("Server socket closed:")
+            LOG_CURRENT_EXCEPTION()
+        finally:
+            self.close()
+
+    @async
+    def _accept_connection(self, sock):
+        # type: (socket.socket) -> _Future
+        sock_fd = sock.fileno()
+        stream = Stream(self._parking_lot, sock)
+        self._connections[sock_fd] = sock
+        try:
+            yield await(self._protocol(stream))
+        except StreamClosed:
+            pass
+        except Exception:
+            LOG_WARNING("Unhandled error in protocol:")
+            LOG_CURRENT_EXCEPTION()
+        finally:
+            del self._connections[sock_fd]
+            sock.close()
+
+
+@async
+def tick():
+    # type: () -> _Future
+    def callback_wrapper(callback):
+        BigWorld.callback(0, callback)
+
+    yield await_callback(callback_wrapper)()
 
 
 def create_listening_socket(host, port):
@@ -129,106 +258,3 @@ def create_listening_socket(host, port):
     sock.bind(addr)
     sock.listen(5)
     return sock
-
-
-@async
-def read(parking_lot, sock, max_length):
-    # type: (SelectParkingLot, socket.socket, int) -> _Future
-    invalidate = False
-    while True:
-        yield await(parking_lot.park_read(sock, invalidate))
-        try:
-            data = sock.recv(max_length)
-        except socket.error as e:
-            if e.args[0] in BLOCKS:
-                invalidate = True
-            elif e.args[0] in DISCONNECTED:
-                raise DisconnectEvent()
-            else:
-                raise
-        else:
-            if not data:
-                raise DisconnectEvent()
-            raise AsyncReturn(data)
-
-
-@async
-def write(parking_lot, write_semaphore, sock, data):
-    # type: (SelectParkingLot, AsyncSemaphore, socket.socket, str) -> _Future
-    invalidate = False
-    yield await(write_semaphore.acquire())
-    try:
-        while data:
-            yield await(parking_lot.park_write(sock, invalidate))
-            try:
-                bytes_sent = sock.send(data[:512])
-                if bytes_sent < min(len(data), 512):
-                    invalidate = True
-                data = data[bytes_sent:]
-            except socket.error as e:
-                if e.args[0] in BLOCKS:
-                    invalidate = True
-                elif e.args[0] in DISCONNECTED:
-                    raise DisconnectEvent()
-                else:
-                    raise
-
-    finally:
-        write_semaphore.release()
-
-
-@async
-def run_accept_loop(parking_lot, listening_sock, accept_callback):
-    # type: (SelectParkingLot, socket.socket, Callable[[socket.socket], Any]) -> _Future
-    while True:
-        yield await(parking_lot.park_read(listening_sock))
-        try:
-            sock, _ = listening_sock.accept()
-        except socket.error as e:
-            if e.args[0] in DISCONNECTED:
-                return
-            else:
-                raise
-        else:
-            sock.setblocking(0)
-            accept_callback(sock)
-
-
-@async
-def handle_socket(parking_lot, connected_socks, protocol, sock):
-    # type: (SelectParkingLot, Dict[int, socket.socket], Protocol, socket.socket) -> _Future
-    sock_fd = sock.fileno()
-    connected_socks[sock_fd] = sock
-    try:
-        write_semaphore = AsyncSemaphore()
-        yield await(
-            protocol(
-                lambda max_length: read(parking_lot, sock, max_length),
-                lambda data: write(parking_lot, write_semaphore, sock, data),
-                sock.getpeername(),
-            )
-        )
-    except DisconnectEvent:
-        pass
-    finally:
-        del connected_socks[sock_fd]
-        sock.close()
-
-
-@contextmanager
-def open_server(protocol, port, host="localhost"):
-    # type: (Protocol, int, str) -> ContextManager[PollingManager]
-    listening_sock = create_listening_socket(host, port)
-    connected_socks = dict()  # type: Dict[int, socket.socket]
-    parking_lot = SelectParkingLot()
-    try:
-        run_accept_loop(parking_lot, listening_sock,
-                        lambda sock: handle_socket(parking_lot, connected_socks, protocol, sock))
-        yield PollingManager(parking_lot.poll_sockets)
-    finally:
-        listening_sock.close()
-        for connected_sock in connected_socks.itervalues():
-            connected_sock.close()
-
-        # wake up waiting futures to clean up protocol instances
-        parking_lot.close()
