@@ -2,7 +2,6 @@ import errno
 import select
 import socket
 
-import BigWorld
 from typing import Callable, Dict, List
 
 from BWUtil import AsyncReturn
@@ -12,8 +11,6 @@ from async import (
     _Future,
     async,
     await,
-    await_callback,
-    delay,
 )
 from debug_utils import LOG_WARNING, LOG_CURRENT_EXCEPTION, LOG_ERROR
 
@@ -103,6 +100,9 @@ class Stream(object):
     def peer_addr(self):
         return self._sock.getpeername()[:2]
 
+    def close(self):
+        self._sock.close()
+
     @async
     def read(self, max_length):
         # type: (int) -> _Future
@@ -152,16 +152,13 @@ class Stream(object):
                 data = data[bytes_sent:]
 
 
-Protocol = Callable[[Stream], None]
-
-
 class ServerClosed(Exception):
     pass
 
 
 class Server(object):
     def __init__(self, protocol, port, host="localhost"):
-        # type: (Protocol, int, str) -> None
+        # type: (Callable[[Server, Stream], None], int, str) -> None
         self._parking_lot = SelectParkingLot()
         self._listening_sock = create_listening_socket(host, port)
         self._connections = dict()  # type: Dict[int, socket.socket]
@@ -175,6 +172,11 @@ class Server(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    @property
+    def closed(self):
+        # type: () -> bool
+        return self._closed
+
     def poll(self):
         # type: () -> None
         if self._closed:
@@ -182,24 +184,12 @@ class Server(object):
 
         self._parking_lot.poll_sockets()
 
-    @async
-    def poll_next_frame(self):
-        # type: () -> _Future
-        yield await(tick())
-        self.poll()
-
-    @async
-    def poll_after(self, timeout):
-        # type: (float) -> _Future
-        yield await(delay(timeout))
-        self.poll()
-
     def close(self):
         # type: () -> None
         self._closed = True
         self._listening_sock.close()
-        for connected_sock in self._connections.itervalues():
-            connected_sock.close()
+        for sock in self._connections.itervalues():
+            sock.close()
 
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
@@ -229,7 +219,7 @@ class Server(object):
         stream = Stream(self._parking_lot, sock)
         self._connections[sock_fd] = sock
         try:
-            yield await(self._protocol(stream))
+            yield await(self._protocol(self, stream))
         except StreamClosed:
             pass
         except Exception:
@@ -238,15 +228,6 @@ class Server(object):
         finally:
             del self._connections[sock_fd]
             sock.close()
-
-
-@async
-def tick():
-    # type: () -> _Future
-    def callback_wrapper(callback):
-        BigWorld.callback(0, callback)
-
-    yield await_callback(callback_wrapper)()
 
 
 def create_listening_socket(host, port):
