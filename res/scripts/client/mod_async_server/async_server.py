@@ -1,18 +1,11 @@
 import errno
 import select
 import socket
-
 from typing import Callable, Dict, List
 
+from async import AsyncEvent, AsyncSemaphore, _Future, async, await
 from BWUtil import AsyncReturn
-from async import (
-    AsyncEvent,
-    AsyncSemaphore,
-    _Future,
-    async,
-    await,
-)
-from debug_utils import LOG_WARNING, LOG_CURRENT_EXCEPTION, LOG_ERROR
+from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
 
 DISCONNECTED = {
     errno.ECONNRESET,

@@ -14,7 +14,11 @@ def echo_protocol(server, stream):
         while True:
             # wait until we receive some data, at most 1024 bytes
             data = yield await(stream.read(1024))
-            LOG_NOTE("Received data from [{host}]:{port}: {data}".format(host=host, port=port, data=data))
+            LOG_NOTE(
+                "Received data from [{host}]:{port}: {data}".format(
+                    host=host, port=port, data=data
+                )
+            )
             # echo the data back to client, wait until everything has been sent
             yield await(stream.write(data))
     finally:
