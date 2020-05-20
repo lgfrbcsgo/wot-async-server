@@ -62,9 +62,10 @@ class SelectParkingLot(object):
     def _wake_up(parked, ready_sock_fds):
         # type: (Dict[int, AsyncEvent], List[int]) -> None
         for ready in ready_sock_fds:
-            event = parked[ready]
-            del parked[ready]
-            event.set()
+            if ready in parked:
+                event = parked[ready]
+                del parked[ready]
+                event.set()
 
     @staticmethod
     def _park(parked, sock):
@@ -85,14 +86,16 @@ class Stream(object):
         self._parking_lot = parking_lot
         self._sock = sock
         self._write_mutex = AsyncSemaphore(1)
+        self._addr = self._sock.getsockname()[:2]
+        self._peer_addr = self._sock.getpeername()[:2]
 
     @property
     def addr(self):
-        return self._sock.getsockname()[:2]
+        return self._addr
 
     @property
     def peer_addr(self):
-        return self._sock.getpeername()[:2]
+        return self._peer_addr
 
     def close(self):
         self._sock.close()
