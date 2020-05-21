@@ -1,5 +1,5 @@
 # WoT Async Server
-A single threaded, non blocking TCP server which makes use of the `async` / `await` primitives of WoT.
+A single threaded, non blocking TCP server for WoT mods which makes use of the `async` / `await`.
 
 The server has a peer dependency on [WoT Async](https://github.com/lgfrbcsgo/wot-async).
 
