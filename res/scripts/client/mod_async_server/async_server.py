@@ -208,7 +208,7 @@ class Server(object):
             if e.args[0] in DISCONNECTED:
                 pass
         except Exception:
-            LOG_ERROR("Server socket closed:")
+            LOG_ERROR("UNHANDLED ERROR IN ACCEPT LOOP:")
             LOG_CURRENT_EXCEPTION()
         finally:
             self.close()
@@ -224,7 +224,7 @@ class Server(object):
         except StreamClosed:
             pass
         except Exception:
-            LOG_WARNING("Unhandled error in protocol:")
+            LOG_WARNING("UNHANDLED ERROR IN PROTOCOL:")
             LOG_CURRENT_EXCEPTION()
         finally:
             del self._connections[sock_fd]
