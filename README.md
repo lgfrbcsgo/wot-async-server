@@ -1,6 +1,9 @@
 # WoT Async Server
 A single threaded, non blocking TCP server which makes use of the `async` / `await` primitives of WoT.
 
+The server has a peer dependency on [WoT Async](https://github.com/lgfrbcsgo/wot-async).
+
+
 **The server should only ever be run on localhost.**
 
 ```python
