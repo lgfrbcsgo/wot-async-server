@@ -3,10 +3,8 @@ import select
 import socket
 from typing import Callable, Dict, List
 
-import BigWorld
-from async import AsyncEvent, AsyncSemaphore, _Future, async, await, await_callback
-from BWUtil import AsyncReturn
 from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
+from mod_async import AsyncResult, AsyncSemaphore, Deferred, Return, async_task
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -28,20 +26,20 @@ BLOCKS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.WSAEWOULDBLOCK}
 class SelectParkingLot(object):
     def __init__(self):
         self._closed = False
-        self._readers = dict()  # type: Dict[int, AsyncEvent]
-        self._writers = dict()  # type: Dict[int, AsyncEvent]
+        self._readers = dict()  # type: Dict[int, Deferred]
+        self._writers = dict()  # type: Dict[int, Deferred]
 
-    @async
+    @async_task
     def park_read(self, sock):
-        # type: (socket.socket) -> _Future
+        # type: (socket.socket) -> AsyncResult
         if not self._closed:
-            yield await(self._park(self._readers, sock).wait())
+            yield self._park(self._readers, sock)
 
-    @async
+    @async_task
     def park_write(self, sock):
-        # type: (socket.socket) -> _Future
+        # type: (socket.socket) -> AsyncResult
         if not self._closed:
-            yield await(self._park(self._writers, sock).wait())
+            yield self._park(self._writers, sock)
 
     def poll_sockets(self):
         # type: () -> None
@@ -60,20 +58,20 @@ class SelectParkingLot(object):
 
     @staticmethod
     def _wake_up(parked, ready_sock_fds):
-        # type: (Dict[int, AsyncEvent], List[int]) -> None
+        # type: (Dict[int, Deferred], List[int]) -> None
         for ready in ready_sock_fds:
             if ready in parked:
-                event = parked[ready]
+                deferred = parked[ready]
                 del parked[ready]
-                event.set()
+                deferred.set()
 
     @staticmethod
     def _park(parked, sock):
-        # type: (Dict[int, AsyncEvent], socket.socket) -> AsyncEvent
+        # type: (Dict[int, Deferred], socket.socket) -> AsyncResult
         sock_fd = sock.fileno()
         if sock_fd not in parked:
-            parked[sock_fd] = AsyncEvent()
-        return parked[sock_fd]
+            parked[sock_fd] = Deferred()
+        return parked[sock_fd].wait()
 
 
 class StreamClosed(Exception):
@@ -100,16 +98,16 @@ class Stream(object):
     def close(self):
         self._sock.close()
 
-    @async
+    @async_task
     def receive(self, max_length):
-        # type: (int) -> _Future
+        # type: (int) -> AsyncResult[str]
         while True:
             try:
                 data = self._sock.recv(max_length)
             except socket.error as e:
                 if e.args[0] in BLOCKS:
                     # socket not ready, wait until socket is ready
-                    yield await(self._parking_lot.park_read(self._sock))
+                    yield self._parking_lot.park_read(self._sock)
                 elif e.args[0] in DISCONNECTED:
                     raise StreamClosed()
                 else:
@@ -118,18 +116,18 @@ class Stream(object):
                 if not data:
                     raise StreamClosed()
                 else:
-                    raise AsyncReturn(data)
+                    raise Return(data)
 
-    @async
+    @async_task
     def send(self, data):
-        # type: (str) -> _Future
-        yield await(self._write_mutex.acquire())
+        # type: (str) -> AsyncResult
+        yield self._write_mutex.acquire()
         try:
-            yield await(self._do_send(data))
+            yield self._do_send(data)
         finally:
             self._write_mutex.release()
 
-    @async
+    @async_task
     def _do_send(self, data):
         while data:
             try:
@@ -137,7 +135,7 @@ class Stream(object):
             except socket.error as e:
                 if e.args[0] in BLOCKS:
                     # socket not ready, wait until socket is ready
-                    yield await(self._parking_lot.park_write(self._sock))
+                    yield self._parking_lot.park_write(self._sock)
                 elif e.args[0] in DISCONNECTED:
                     raise StreamClosed()
                 else:
@@ -145,7 +143,7 @@ class Stream(object):
             else:
                 if bytes_sent < min(len(data), 512):
                     # not everything has been sent, wait until socket is ready again
-                    yield await(self._parking_lot.park_write(self._sock))
+                    yield self._parking_lot.park_write(self._sock)
                 data = data[bytes_sent:]
 
 
@@ -155,7 +153,7 @@ class ServerClosed(Exception):
 
 class Server(object):
     def __init__(self, protocol, port, host="localhost", connection_limit=8):
-        # type: (Callable[[Server, Stream], _Future], int, str, int) -> None
+        # type: (Callable[[Server, Stream], AsyncResult], int, str, int) -> None
         self._parking_lot = SelectParkingLot()
         self._listening_sock = create_listening_socket(host, port)
         self._connections = dict()  # type: Dict[int, socket.socket]
@@ -192,12 +190,12 @@ class Server(object):
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
 
-    @async
+    @async_task
     def _start_accepting(self):
-        # type: () -> _Future
+        # type: () -> AsyncResult
         try:
             while True:
-                yield await(self._parking_lot.park_read(self._listening_sock))
+                yield self._parking_lot.park_read(self._listening_sock)
                 sock, _ = self._listening_sock.accept()
                 sock.setblocking(0)
                 if len(self._connections) < self._connection_limit:
@@ -213,14 +211,14 @@ class Server(object):
         finally:
             self.close()
 
-    @async
+    @async_task
     def _accept_connection(self, sock):
-        # type: (socket.socket) -> _Future
+        # type: (socket.socket) -> AsyncResult
         sock_fd = sock.fileno()
         stream = Stream(self._parking_lot, sock)
         self._connections[sock_fd] = sock
         try:
-            yield await(self._protocol(self, stream))
+            yield self._protocol(self, stream)
         except StreamClosed:
             pass
         except Exception:
@@ -240,11 +238,3 @@ def create_listening_socket(host, port):
     sock.bind(addr)
     sock.listen(5)
     return sock
-
-
-@async
-def delay(timeout):
-    def callback_wrapper(callback):
-        BigWorld.callback(timeout, callback)
-
-    yield await_callback(callback_wrapper)()
