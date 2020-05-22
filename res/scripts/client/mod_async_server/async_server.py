@@ -4,7 +4,7 @@ import socket
 from typing import Callable, Dict, List
 
 from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
-from mod_async import AsyncResult, AsyncSemaphore, Deferred, Return, async_task
+from mod_async import AsyncResult, AsyncSemaphore, Return, async_task
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -26,8 +26,8 @@ BLOCKS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.WSAEWOULDBLOCK}
 class SelectParkingLot(object):
     def __init__(self):
         self._closed = False
-        self._readers = dict()  # type: Dict[int, Deferred]
-        self._writers = dict()  # type: Dict[int, Deferred]
+        self._readers = dict()  # type: Dict[int, AsyncResult]
+        self._writers = dict()  # type: Dict[int, AsyncResult]
 
     @async_task
     def park_read(self, sock):
@@ -58,20 +58,20 @@ class SelectParkingLot(object):
 
     @staticmethod
     def _wake_up(parked, ready_sock_fds):
-        # type: (Dict[int, Deferred], List[int]) -> None
+        # type: (Dict[int, AsyncResult], List[int]) -> None
         for ready in ready_sock_fds:
             if ready in parked:
                 deferred = parked[ready]
                 del parked[ready]
-                deferred.set()
+                deferred.resolve()
 
     @staticmethod
     def _park(parked, sock):
-        # type: (Dict[int, Deferred], socket.socket) -> AsyncResult
+        # type: (Dict[int, AsyncResult], socket.socket) -> AsyncResult
         sock_fd = sock.fileno()
         if sock_fd not in parked:
-            parked[sock_fd] = Deferred()
-        return parked[sock_fd].wait()
+            parked[sock_fd] = AsyncResult()
+        return parked[sock_fd]
 
 
 class StreamClosed(Exception):
