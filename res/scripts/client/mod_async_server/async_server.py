@@ -4,7 +4,7 @@ import socket
 from typing import Callable, Dict, List
 
 from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
-from mod_async import AsyncResult, AsyncSemaphore, Return, async_task
+from mod_async import AsyncMutex, AsyncResult, Return, async_task
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -83,7 +83,7 @@ class Stream(object):
         # type: (SelectParkingLot, socket.socket) -> None
         self._parking_lot = parking_lot
         self._sock = sock
-        self._write_mutex = AsyncSemaphore(1)
+        self._write_mutex = AsyncMutex()
         self._addr = self._sock.getsockname()[:2]
         self._peer_addr = self._sock.getpeername()[:2]
 
