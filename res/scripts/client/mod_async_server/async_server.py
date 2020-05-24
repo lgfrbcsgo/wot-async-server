@@ -1,10 +1,8 @@
 import errno
 import select
 import socket
-from typing import Callable, Dict, List
 
-from debug_utils import LOG_CURRENT_EXCEPTION, LOG_ERROR, LOG_WARNING
-from mod_async import AsyncMutex, AsyncResult, Return, async_task
+from mod_async import AsyncMutex, AsyncValue, Return, async_task, auto_run
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -26,23 +24,20 @@ BLOCKS = {errno.EAGAIN, errno.EWOULDBLOCK, errno.WSAEWOULDBLOCK}
 class SelectParkingLot(object):
     def __init__(self):
         self._closed = False
-        self._readers = dict()  # type: Dict[int, AsyncResult]
-        self._writers = dict()  # type: Dict[int, AsyncResult]
+        self._readers = dict()
+        self._writers = dict()
 
     @async_task
     def park_read(self, sock):
-        # type: (socket.socket) -> AsyncResult
         if not self._closed:
             yield self._park(self._readers, sock)
 
     @async_task
     def park_write(self, sock):
-        # type: (socket.socket) -> AsyncResult
         if not self._closed:
             yield self._park(self._writers, sock)
 
     def poll_sockets(self):
-        # type: () -> None
         read_fds = self._readers.keys()
         write_fds = self._writers.keys()
 
@@ -58,19 +53,17 @@ class SelectParkingLot(object):
 
     @staticmethod
     def _wake_up(parked, ready_sock_fds):
-        # type: (Dict[int, AsyncResult], List[int]) -> None
         for ready in ready_sock_fds:
             if ready in parked:
                 deferred = parked[ready]
                 del parked[ready]
-                deferred.resolve()
+                deferred.set()
 
     @staticmethod
     def _park(parked, sock):
-        # type: (Dict[int, AsyncResult], socket.socket) -> AsyncResult
         sock_fd = sock.fileno()
         if sock_fd not in parked:
-            parked[sock_fd] = AsyncResult()
+            parked[sock_fd] = AsyncValue()
         return parked[sock_fd]
 
 
@@ -80,7 +73,6 @@ class StreamClosed(Exception):
 
 class Stream(object):
     def __init__(self, parking_lot, sock):
-        # type: (SelectParkingLot, socket.socket) -> None
         self._parking_lot = parking_lot
         self._sock = sock
         self._write_mutex = AsyncMutex()
@@ -100,7 +92,6 @@ class Stream(object):
 
     @async_task
     def receive(self, max_length):
-        # type: (int) -> AsyncResult[str]
         while True:
             try:
                 data = self._sock.recv(max_length)
@@ -120,7 +111,6 @@ class Stream(object):
 
     @async_task
     def send(self, data):
-        # type: (str) -> AsyncResult
         yield self._write_mutex.acquire()
         try:
             yield self._do_send(data)
@@ -153,10 +143,9 @@ class ServerClosed(Exception):
 
 class Server(object):
     def __init__(self, protocol, port, host="localhost", connection_limit=8):
-        # type: (Callable[[Server, Stream], AsyncResult], int, str, int) -> None
         self._parking_lot = SelectParkingLot()
         self._listening_sock = create_listening_socket(host, port)
-        self._connections = dict()  # type: Dict[int, socket.socket]
+        self._connections = dict()
         self._connection_limit = connection_limit
         self._protocol = protocol
         self._closed = False
@@ -170,18 +159,15 @@ class Server(object):
 
     @property
     def closed(self):
-        # type: () -> bool
         return self._closed
 
     def poll(self):
-        # type: () -> None
         if self._closed:
             raise ServerClosed()
 
         self._parking_lot.poll_sockets()
 
     def close(self):
-        # type: () -> None
         self._closed = True
         self._listening_sock.close()
         for sock in self._connections.itervalues():
@@ -190,9 +176,9 @@ class Server(object):
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
 
+    @auto_run
     @async_task
     def _start_accepting(self):
-        # type: () -> AsyncResult
         try:
             while True:
                 yield self._parking_lot.park_read(self._listening_sock)
@@ -205,15 +191,12 @@ class Server(object):
         except socket.error as e:
             if e.args[0] in DISCONNECTED:
                 pass
-        except Exception:
-            LOG_ERROR("UNHANDLED ERROR IN ACCEPT LOOP:")
-            LOG_CURRENT_EXCEPTION()
         finally:
             self.close()
 
+    @auto_run
     @async_task
     def _accept_connection(self, sock):
-        # type: (socket.socket) -> AsyncResult
         sock_fd = sock.fileno()
         stream = Stream(self._parking_lot, sock)
         self._connections[sock_fd] = sock
@@ -221,16 +204,12 @@ class Server(object):
             yield self._protocol(self, stream)
         except StreamClosed:
             pass
-        except Exception:
-            LOG_WARNING("UNHANDLED ERROR IN PROTOCOL:")
-            LOG_CURRENT_EXCEPTION()
         finally:
             del self._connections[sock_fd]
             sock.close()
 
 
 def create_listening_socket(host, port):
-    # type: (str, int) -> socket.socket
     fam, _, _, _, addr = socket.getaddrinfo(host, port)[0]
     sock = socket.socket(fam, socket.SOCK_STREAM)
     sock.setblocking(0)
