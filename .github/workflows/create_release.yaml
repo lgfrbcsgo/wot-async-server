@@ -42,11 +42,11 @@ jobs:
         asset_content_type: application/zip
 
     - name: Upload Release Asset (zip)
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/${{ steps.build_release.outputs.release_name }}
-          asset_name: ${{ steps.build_release.outputs.release_name }}
-          asset_content_type: application/zip
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./dist/${{ steps.build_release.outputs.release_name }}
+        asset_name: ${{ steps.build_release.outputs.release_name }}
+        asset_content_type: application/zip
