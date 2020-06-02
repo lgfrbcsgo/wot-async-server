@@ -5,7 +5,7 @@ import subprocess
 from os import path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
-from pynt import task
+from pynt import main, task
 
 AUTHOR = "lgfrbcsgo"
 NAME = "Async Server"
@@ -146,3 +146,7 @@ def get_files(directory):
     for root, _, files in os.walk(directory):
         for file_name in files:
             yield path.join(root, file_name)
+
+
+if __name__ == "__main__":
+    main()
