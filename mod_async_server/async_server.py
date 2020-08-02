@@ -119,6 +119,7 @@ class Stream(object):
 
     @async_task
     def _do_send(self, data):
+        data = memoryview(data)
         while data:
             try:
                 bytes_sent = self._sock.send(data[:512])
