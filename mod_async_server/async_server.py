@@ -188,7 +188,6 @@ class Server(object):
 
         for sock in self._connections.itervalues():
             sock.close()
-        self._connections = dict()
 
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
@@ -198,8 +197,11 @@ class Server(object):
     @async_task
     def _start_accepting(self):
         try:
-            while not self.closed:
+            while True:
                 yield self._parking_lot.park_read(self._listening_sock)
+                if self.closed:
+                    return
+
                 sock, _ = self._listening_sock.accept()
                 sock.setblocking(0)
                 if len(self._connections) < self._connection_limit:
