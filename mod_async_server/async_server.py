@@ -1,6 +1,7 @@
 import errno
 import select
 import socket
+from typing import Optional
 
 from mod_async import AsyncMutex, AsyncValue, Return, async_task, auto_run
 
@@ -144,15 +145,16 @@ class ServerClosed(Exception):
 
 class Server(object):
     def __init__(self, protocol, port, host="localhost", connection_limit=8):
-        self._parking_lot = SelectParkingLot()
-        self._listening_sock = create_listening_socket(host, port)
+        self.port = port
+        self.host = host
+        self._parking_lot = None  # type: Optional[SelectParkingLot]
+        self._listening_sock = None  # type: Optional[socket.socket]
         self._connections = dict()
         self._connection_limit = connection_limit
         self._protocol = protocol
-        self._closed = False
-        self._start_accepting()
 
     def __enter__(self):
+        self.open()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -160,28 +162,43 @@ class Server(object):
 
     @property
     def closed(self):
-        return self._closed
+        return self._listening_sock is None
+
+    def open(self):
+        if not self.closed:
+            return
+
+        self._listening_sock = create_listening_socket(self.host, self.port)
+        self._parking_lot = SelectParkingLot()
+
+        self._start_accepting()
 
     def poll(self):
-        if self._closed:
+        if self.closed:
             raise ServerClosed()
 
         self._parking_lot.poll_sockets()
 
     def close(self):
-        self._closed = True
+        if self.closed:
+            return
+
         self._listening_sock.close()
+        self._listening_sock = None
+
         for sock in self._connections.itervalues():
             sock.close()
+        self._connections = dict()
 
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
+        self._parking_lot = None
 
     @auto_run
     @async_task
     def _start_accepting(self):
         try:
-            while True:
+            while not self.closed:
                 yield self._parking_lot.park_read(self._listening_sock)
                 sock, _ = self._listening_sock.accept()
                 sock.setblocking(0)
