@@ -3,7 +3,7 @@ import select
 import socket
 from typing import Optional
 
-from mod_async import AsyncMutex, AsyncValue, Return, async_task, auto_run
+from mod_async import AsyncMutex, AsyncValue, Return, async_task
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -199,7 +199,6 @@ class Server(object):
         self._parking_lot.close()
         self._parking_lot = None
 
-    @auto_run
     @async_task
     def _start_accepting(self):
         try:
@@ -220,7 +219,6 @@ class Server(object):
         finally:
             self.close()
 
-    @auto_run
     @async_task
     def _accept_connection(self, sock):
         sock_fd = sock.fileno()
