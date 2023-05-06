@@ -11,10 +11,6 @@ AUTHOR = "lgfrbcsgo"
 NAME = "Async Server"
 DESCRIPTION = "A single threaded, non blocking TCP server for WoT mods which makes use of the `async` / `await`."
 
-SOURCES = [
-    "mod_async_server",
-]
-
 RELEASE_DEPENDENCIES = [
     "https://github.com/lgfrbcsgo/wot-async/releases/download/v0.1.3/lgfrbcsgo.async_0.1.3.wotmod",
 ]
@@ -25,7 +21,7 @@ def clean():
     subprocess.check_call(["rm", "-rf", "dist"])
 
 
-@task()
+@task(clean)
 def wotmod():
     # clean dist directory
     subprocess.check_call(["rm", "-rf", "dist/wotmod"])
@@ -36,8 +32,7 @@ def wotmod():
     subprocess.check_call(["mkdir", "-p", source_dst])
 
     # copy sources
-    for source in SOURCES:
-        subprocess.check_call(["cp", "-r", source, source_dst])
+    subprocess.check_call(["cp", "-r", "src/.", source_dst])
 
     # compile sources
     subprocess.check_call(["python2.7", "-m", "compileall", source_dst])
