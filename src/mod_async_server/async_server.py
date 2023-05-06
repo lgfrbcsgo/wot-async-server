@@ -47,6 +47,12 @@ class SelectParkingLot(object):
         self._wake_up(self._readers, ready_read_fds)
         self._wake_up(self._writers, ready_write_fds)
 
+    def close_socket(self, sock):
+        sock_fd = sock.fileno()
+        sock.close()
+        self._wake_up(self._readers, (sock_fd,))
+        self._wake_up(self._writers, (sock_fd,))
+
     def close(self):
         self._closed = True
         self._wake_up(self._readers, self._readers.keys())
@@ -89,7 +95,7 @@ class Stream(object):
         return self._peer_addr
 
     def close(self):
-        self._sock.close()
+        self._parking_lot.close_socket(self._sock)
 
     @async_task
     def receive(self, max_length):
