@@ -4,6 +4,7 @@ import socket
 from typing import Optional
 
 from mod_async import AsyncMutex, AsyncValue, Return, async_task
+from mod_async_server.logging import LOG_WARNING, LOG_CURRENT_EXCEPTION, LOG_NOTE
 
 DISCONNECTED = {
     errno.ECONNRESET,
@@ -222,13 +223,26 @@ class Server(object):
     @async_task
     def _accept_connection(self, sock):
         sock_fd = sock.fileno()
-        stream = Stream(self._parking_lot, sock)
         self._connections[sock_fd] = sock
+        stream = Stream(self._parking_lot, sock)
+
+        host, port = stream.peer_addr
+        LOG_NOTE(
+            "TCP: [{host}]:{port} connected.".format(host=host, port=port)
+        )
+
         try:
             yield self._protocol(self, stream)
         except StreamClosed:
             pass
+        except Exception:
+            LOG_WARNING("Protocol error")
+            LOG_CURRENT_EXCEPTION()
         finally:
+            LOG_NOTE(
+                "TCP: [{host}]:{port} disconnected.".format(host=host, port=port)
+            )
+
             del self._connections[sock_fd]
             sock.close()
 
