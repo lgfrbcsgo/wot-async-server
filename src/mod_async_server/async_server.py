@@ -96,7 +96,11 @@ class Stream(object):
         return self._peer_addr
 
     def close(self):
-        self._parking_lot.close_socket(self._sock)
+        try:
+            self._parking_lot.close_socket(self._sock)
+        except Exception:
+            LOG_WARNING("Error closing stream.")
+            LOG_CURRENT_EXCEPTION()
 
     @async_task
     def receive(self, max_length):
