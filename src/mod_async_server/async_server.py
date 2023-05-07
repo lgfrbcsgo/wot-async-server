@@ -76,13 +76,14 @@ class SelectParkingLot(object):
 
 
 class StreamClosed(Exception):
-    pass
+    def __init__(self, stream):
+        self.stream = stream
 
 
 class Stream(object):
     def __init__(self, parking_lot, sock):
         self._parking_lot = parking_lot
-        self._sock = sock
+        self._sock = sock  # type: Optional[socket.socket]
         self._write_mutex = AsyncMutex()
         self._addr = self._sock.getsockname()[:2]
         self._peer_addr = self._sock.getpeername()[:2]
@@ -95,16 +96,28 @@ class Stream(object):
     def peer_addr(self):
         return self._peer_addr
 
+    @property
+    def closed(self):
+        return self._sock is None
+
     def close(self):
+        if self.closed:
+            return
+
         try:
             self._parking_lot.close_socket(self._sock)
         except Exception:
             LOG_WARNING("Error closing stream.")
             LOG_CURRENT_EXCEPTION()
+        finally:
+            self._sock = None
 
     @async_task
     def receive(self, max_length):
         while True:
+            if self.closed:
+                raise StreamClosed(self)
+
             try:
                 data = self._sock.recv(max_length)
             except socket.error as e:
@@ -112,12 +125,12 @@ class Stream(object):
                     # socket not ready, wait until socket is ready
                     yield self._parking_lot.park_read(self._sock)
                 elif e.args[0] in DISCONNECTED:
-                    raise StreamClosed()
+                    self._sock = None
                 else:
                     raise
             else:
                 if not data:
-                    raise StreamClosed()
+                    self._sock = None
                 else:
                     raise Return(data)
 
@@ -133,6 +146,9 @@ class Stream(object):
     def _do_send(self, data):
         data = memoryview(data)
         while data:
+            if self.closed:
+                raise StreamClosed(self)
+
             try:
                 bytes_sent = self._sock.send(data[:512])
             except socket.error as e:
@@ -140,7 +156,7 @@ class Stream(object):
                     # socket not ready, wait until socket is ready
                     yield self._parking_lot.park_write(self._sock)
                 elif e.args[0] in DISCONNECTED:
-                    raise StreamClosed()
+                    self._sock = None
                 else:
                     raise
             else:
@@ -197,8 +213,8 @@ class Server(object):
         self._listening_sock.close()
         self._listening_sock = None
 
-        for sock in self._connections.itervalues():
-            sock.close()
+        for stream in self._connections.itervalues():
+            stream.close()
 
         # wake up waiting futures to clean up protocol instances
         self._parking_lot.close()
@@ -227,8 +243,8 @@ class Server(object):
     @async_task
     def _accept_connection(self, sock):
         sock_fd = sock.fileno()
-        self._connections[sock_fd] = sock
         stream = Stream(self._parking_lot, sock)
+        self._connections[sock_fd] = stream
 
         host, port = stream.peer_addr
         LOG_NOTE(
@@ -237,18 +253,16 @@ class Server(object):
 
         try:
             yield self._protocol(self, stream)
-        except StreamClosed:
-            pass
-        except Exception:
-            LOG_WARNING("Protocol error")
-            LOG_CURRENT_EXCEPTION()
+        except Exception as e:
+            if not isinstance(e, StreamClosed) or e.stream != stream:
+                LOG_WARNING("Protocol error")
+                LOG_CURRENT_EXCEPTION()
         finally:
             LOG_NOTE(
                 "TCP: [{host}]:{port} disconnected.".format(host=host, port=port)
             )
-
             del self._connections[sock_fd]
-            sock.close()
+            stream.close()
 
 
 def create_listening_socket(host, port):
